@@ -1,0 +1,10 @@
+{
+  "notification": {
+    "open_command": ["gtk-launch", "org.gnome.Evolution.desktop"]
+  },
+  "tls_overrides": {
+    "imap.mail.example.com": {
+      "allowed_cert_names": ["*.example.com", "example.com"]
+    }
+  }
+}

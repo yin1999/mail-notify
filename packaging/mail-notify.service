@@ -1,0 +1,12 @@
+[Unit]
+Description=GNOME Online Accounts mail notifier
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/mail-notify
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=default.target
