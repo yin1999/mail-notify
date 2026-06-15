@@ -44,19 +44,13 @@ var statusItemRE = regexp.MustCompile(`(?i)\b(UIDNEXT|UNSEEN)\s+([0-9]+)\b`)
 func Check(ctx context.Context, settings goa.IMAPSettings, credentials goa.Credentials, options Options) (Status, error) {
 	address := imapAddress(settings)
 	tlsOverride := options.tlsOverride(settings.Host)
-	dialer := net.Dialer{Timeout: 20 * time.Second}
-
-	var networkConn net.Conn
-	var err error
-	if settings.UseSSL {
-		networkConn, err = tls.DialWithDialer(&dialer, "tcp", address, tlsConfig(settings.Host, tlsOverride))
-	} else {
-		networkConn, err = dialer.DialContext(ctx, "tcp", address)
-	}
+	networkConn, err := dial(ctx, address, settings.Host, settings.UseSSL, tlsOverride)
 	if err != nil {
 		return Status{}, fmt.Errorf("connect %s: %w", address, err)
 	}
 	defer networkConn.Close()
+	stopCloseOnCancel := closeOnCancel(ctx, networkConn)
+	defer stopCloseOnCancel()
 
 	client := &conn{
 		netConn: networkConn,
@@ -65,22 +59,22 @@ func Check(ctx context.Context, settings goa.IMAPSettings, credentials goa.Crede
 	}
 
 	if err := client.expectGreeting(); err != nil {
-		return Status{}, err
+		return Status{}, ctxErrOr(ctx, err)
 	}
 
 	if settings.UseTLS && !settings.UseSSL {
 		if err := client.startTLS(settings.Host, tlsOverride); err != nil {
-			return Status{}, err
+			return Status{}, ctxErrOr(ctx, err)
 		}
 	}
 
 	if credentials.OAuth2AccessToken != "" {
 		if err := client.authenticateXOAUTH2(settings.User, credentials.OAuth2AccessToken); err != nil {
-			return Status{}, fmt.Errorf("xoauth2 auth: %w", err)
+			return Status{}, fmt.Errorf("xoauth2 auth: %w", ctxErrOr(ctx, err))
 		}
 	} else if credentials.Password != "" {
 		if _, err := client.command("LOGIN %s %s", quote(settings.User), quote(credentials.Password)); err != nil {
-			return Status{}, fmt.Errorf("login: %w", err)
+			return Status{}, fmt.Errorf("login: %w", ctxErrOr(ctx, err))
 		}
 	} else {
 		return Status{}, errors.New("missing IMAP credentials")
@@ -88,11 +82,49 @@ func Check(ctx context.Context, settings goa.IMAPSettings, credentials goa.Crede
 
 	status, err := client.status("INBOX")
 	if err != nil {
-		return Status{}, err
+		return Status{}, ctxErrOr(ctx, err)
 	}
 
 	_, _ = client.command("LOGOUT")
 	return status, nil
+}
+
+func dial(ctx context.Context, address, host string, useSSL bool, override TLSOverride) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: 20 * time.Second}
+	if !useSSL {
+		return dialer.DialContext(ctx, "tcp", address)
+	}
+
+	rawConn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsConn := tls.Client(rawConn, tlsConfig(host, override))
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		_ = rawConn.Close()
+		return nil, err
+	}
+	return tlsConn, nil
+}
+
+func closeOnCancel(ctx context.Context, conn net.Conn) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
+}
+
+func ctxErrOr(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
 }
 
 func (c *conn) expectGreeting() error {

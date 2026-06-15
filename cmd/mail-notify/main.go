@@ -30,6 +30,7 @@ type stateFile struct {
 }
 
 const staleStateAfter = 10 * 24 * time.Hour
+const accountCheckTimeout = 45 * time.Second
 
 type appConfig struct {
 	TLSOverrides map[string]imapcheck.TLSOverride `json:"tls_overrides"`
@@ -92,8 +93,11 @@ func main() {
 	}
 
 	run := func() {
+		if ctx.Err() != nil {
+			return
+		}
 		changed, err := checkAccounts(ctx, checker, state, config, *notifyExisting, *debug, logger)
-		if err != nil {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			logger.Printf("check failed: %v", err)
 		}
 		if changed {
@@ -163,6 +167,10 @@ func checkAccounts(ctx context.Context, checker *checker, state stateFile, confi
 	seenKeys := make(map[string]struct{}, len(accounts))
 	changed := false
 	for _, account := range accounts {
+		if ctx.Err() != nil {
+			return changed, ctx.Err()
+		}
+
 		key := account.Key()
 		seenKeys[key] = struct{}{}
 		if touchAccountState(state, key, now) {
@@ -173,16 +181,25 @@ func checkAccounts(ctx context.Context, checker *checker, state stateFile, confi
 			logger.Printf("checking %s via %s", account.DisplayName(), account.IMAPAddress())
 		}
 
-		credentials, err := checker.accounts.Credentials(ctx, account)
+		accountCtx, cancelAccountCheck := context.WithTimeout(ctx, accountCheckTimeout)
+		credentials, err := checker.accounts.Credentials(accountCtx, account)
 		if err != nil {
+			cancelAccountCheck()
+			if ctx.Err() != nil {
+				return changed, ctx.Err()
+			}
 			logger.Printf("%s: credentials unavailable: %v", account.DisplayName(), err)
 			continue
 		}
 
-		status, err := imapcheck.Check(ctx, account.IMAP, credentials, imapcheck.Options{
+		status, err := imapcheck.Check(accountCtx, account.IMAP, credentials, imapcheck.Options{
 			TLSOverrides: config.TLSOverrides,
 		})
+		cancelAccountCheck()
 		if err != nil {
+			if ctx.Err() != nil {
+				return changed, ctx.Err()
+			}
 			logger.Printf("%s: IMAP check failed: %v", account.DisplayName(), err)
 			continue
 		}
