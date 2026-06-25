@@ -17,6 +17,7 @@ import (
 	"mail-notify/internal/goa"
 	"mail-notify/internal/imapcheck"
 	"mail-notify/internal/notify"
+	"mail-notify/internal/sessionenv"
 )
 
 type mailboxState struct {
@@ -84,7 +85,7 @@ func main() {
 			if event.Key != "default" && event.Key != "open" {
 				return
 			}
-			if err := startConfiguredCommand(config.Notification.OpenCommand); err != nil {
+			if err := startConfiguredCommand(config.Notification.OpenCommand, logger); err != nil {
 				logger.Printf("open notification command failed: %v", err)
 			}
 		}); err != nil {
@@ -303,13 +304,13 @@ func sendUnreadNotification(notifier *notify.Client, config appConfig, account g
 	}
 }
 
-func startConfiguredCommand(argv []string) error {
+func startConfiguredCommand(argv []string, logger *log.Logger) error {
 	if len(argv) == 0 || argv[0] == "" {
 		return errors.New("notification open command is empty")
 	}
 
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = os.Environ()
+	cmd.Env = sessionenv.WithSystemdUserLocale(os.Environ(), logger)
 	if err := cmd.Start(); err != nil {
 		return err
 	}

@@ -67,6 +67,8 @@ Example TLS override for `imap.corp.netease.com` when the server presents a cert
 { "notification": { "open_command": ["thunderbird"] } }
 ```
 
+When starting the click command, `mail-notify` copies the current locale variables (`LANG`, `LANGUAGE`, and `LC_*`) from the systemd user manager environment. This keeps desktop clients aligned with `systemctl --user show-environment` even if the notifier process was started with an older locale.
+
 This keeps certificate chain validation enabled, but accepts the configured certificate DNS names for that one IMAP host. If a server also needs a different SNI name, add `server_name`, for example `"server_name": "netease.com"`.
 
 The default state file is:
